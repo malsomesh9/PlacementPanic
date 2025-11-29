@@ -5,6 +5,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { loginSchema, signupSchema, insertInterviewSchema } from "@shared/schema";
 import { z } from "zod";
+import { submitAnswerSchema } from "@shared/schema";
+import { AnswerEvaluator, answerStorage } from "./answer-service";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "placement-panic-secret-key";
 
@@ -195,6 +197,95 @@ export async function registerRoutes(
       res.json(feedback);
     } catch (error) {
       console.error("Get feedback error:", error);
+
+      // Answer submission and real-time evaluation endpoint
+app.post("/api/answers/submit", authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    const data = submitAnswerSchema.parse(req.body);
+    
+    // Save the answer submission
+    const answer = await answerStorage.saveAnswer({
+      ...data,
+      userId: req.user!.id,
+      evaluationStatus: "pending",
+    });
+    
+    // Start evaluation in background and stream progress
+    res.setHeader("Content-Type", "application/json");
+    res.json({
+      answerId: answer.id,
+      status: "evaluating",
+      message: "Your answer is being evaluated...",
+    });
+    
+    // Perform evaluation asynchronously
+    const question = await storage.questions.find((q) => q.id === data.questionId);
+    if (question) {
+      const evaluation = await AnswerEvaluator.evaluateAnswer(
+        data.answerText,
+        question.text,
+        question.difficulty,
+        question.category
+      );
+      
+      // Update answer with evaluation results
+      await answerStorage.updateAnswerEvaluation(answer.id, evaluation);
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: error.errors[0].message });
+    }
+    console.error("Submit answer error:", error);
+    res.status(500).json({ error: "Failed to submit answer" });
+  }
+});
+
+// Get answer evaluation
+app.get("/api/answers/:id/evaluation", authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    const answer = await answerStorage.getAnswer(req.params.id);
+    
+    if (!answer) {
+      return res.status(404).json({ error: "Answer not found" });
+    }
+    
+    if (answer.userId !== req.user!.id) {
+      return res.status(403).json({ error: "Not authorized" });
+    }
+    
+    res.json({
+      answerId: answer.id,
+      status: answer.evaluationStatus,
+      score: answer.score,
+      feedback: answer.feedback,
+      evaluatedAt: answer.evaluatedAt,
+    });
+  } catch (error) {
+    console.error("Get evaluation error:", error);
+    res.status(500).json({ error: "Failed to get evaluation" });
+  }
+});
+
+// Get all answers for an interview
+app.get("/api/interviews/:interviewId/answers", authenticateToken, async (req: AuthRequest, res) => {
+  try {
+    const interview = await storage.getInterview(req.params.interviewId);
+    
+    if (!interview) {
+      return res.status(404).json({ error: "Interview not found" });
+    }
+    
+    if (interview.userId !== req.user!.id) {
+      return res.status(403).json({ error: "Not authorized" });
+    }
+    
+    const answers = await answerStorage.getAnswersByInterview(req.params.interviewId);
+    res.json(answers);
+  } catch (error) {
+    console.error("Get answers error:", error);
+    res.status(500).json({ error: "Failed to get answers" });
+  }
+});
       res.status(500).json({ error: "Failed to generate feedback" });
     }
   });
