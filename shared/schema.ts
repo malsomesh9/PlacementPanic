@@ -97,3 +97,49 @@ export interface InterviewSession {
   startTime: number;
   isComplete: boolean;
 }
+
+// Answers table for storing user responses to interview questions
+export const answers = pgTable("answers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  interviewId: varchar("interview_id").notNull(),
+  questionId: varchar("question_id").notNull(),
+  userId: varchar("user_id").notNull(),
+  answerText: text("answer_text").notNull(),
+  confidence: integer("confidence"), // 1-5 scale
+  feedback: text("feedback"), // AI-generated feedback
+  score: integer("score"), // 0-100 scale
+  evaluationStatus: text("evaluation_status").default("pending"), // pending, completed, error
+  submittedAt: timestamp("submitted_at").defaultNow(),
+  evaluatedAt: timestamp("evaluated_at"),
+});
+
+export const insertAnswerSchema = createInsertSchema(answers).omit({ id: true, submittedAt: true, evaluatedAt: true });
+export type InsertAnswer = z.infer<typeof insertAnswerSchema>;
+export type Answer = typeof answers.$inferSelect;
+
+// Real-time answer evaluation request/response types
+export const submitAnswerSchema = z.object({
+  interviewId: z.string().uuid(),
+  questionId: z.string().uuid(),
+  answerText: z.string().min(1, "Answer cannot be empty"),
+  confidence: z.number().int().min(1).max(5).optional(),
+});
+
+export type SubmitAnswerInput = z.infer<typeof submitAnswerSchema>;
+
+export interface AnswerEvaluation {
+  score: number;
+  feedback: string;
+  strengths: string[];
+  improvements: string[];
+  suggestions: string[];
+  evaluationTime: number;
+}
+
+export interface RealTimeAnswerUpdate {
+  status: "evaluating" | "completed" | "error";
+  answerId: string;
+  progress?: number; // 0-100 for streaming evaluation
+  evaluation?: AnswerEvaluation;
+  error?: string;
+}
